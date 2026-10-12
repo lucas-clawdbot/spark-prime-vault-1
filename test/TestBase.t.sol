@@ -79,7 +79,8 @@ abstract contract TestBase is Test {
     address internal taker       = makeAddr("taker");
     address internal unpauser    = makeAddr("unpauser");
 
-    address internal user = makeAddr("user");
+    address internal user         = makeAddr("user");
+    address internal unauthorized = makeAddr("unauthorized");
 
     IERC20Like      internal usdc   = IERC20Like(Ethereum.USDC);
     ISparkVaultLike internal spUSDC = ISparkVaultLike(Ethereum.SPARK_VAULT_V2_SPUSDC);
@@ -102,6 +103,17 @@ abstract contract TestBase is Test {
 
     function _getBlock() internal pure returns (uint256) {
         return 26148600;
+    }
+
+    function _requestDeposit(
+        address user_,
+        uint256 assets_,
+        address recipient_
+    ) internal returns (uint256 requestId_) {
+        vm.startPrank(user_);
+        usdc.approve(address(spPRIME), assets_);
+        requestId_ = spPRIME.requestDeposit(assets_, recipient_);
+        vm.stopPrank();
     }
 
     /**********************************************************************************************/
