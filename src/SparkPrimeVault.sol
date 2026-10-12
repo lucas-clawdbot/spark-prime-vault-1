@@ -47,7 +47,6 @@ interface IERC4626Like {
 // TODO: Clean up roles
 // TODO: Add more validation to setters
 // TODO: Should processDepositQueue and processRedeemQueue both be permissioned, if so, should we make all withdrawals async?
-// TODO: Refactor setChi to use nominal
 // TODO: requestDepositWithPermit?
 // TODO: Get pendingOfReceiver()/getPendingOfOwner() even needed?
 // TODO: Ask Sam if we need to add capability for reducing deposit/redeem request amounts
@@ -99,19 +98,21 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256         shares
     );
 
-    event Referral(uint16 indexed referral, address indexed recipient, uint256 assets);
-
     event CapacitySet(uint256 newCapacity);
 
-    event ChiSet(uint192 chi);
-
     event Drip(uint192 chi, uint256 diff);
+
+    event LossRealized(uint192 chi, uint256 loss);
 
     event MaxRedeemFeeSet(uint256 fee);
 
     event MinimumsSet(uint256 minDeposit, uint256 minWithdraw);
 
     event Paused();
+
+    event RedeemFeeSet(uint256 fee);
+
+    event Referral(uint16 indexed referral, address indexed recipient, uint256 assets);
 
     // TODO: Should not have `to` as it can only ever be the caller.
     event Take(address indexed to, uint256 shares);
@@ -121,8 +122,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     event VSRBoundsSet(uint256 minVSR, uint256 maxVSR);
 
     event VSRSet(uint256 vsr);
-
-    event RedeemFeeSet(uint256 fee);
 
     struct QueuedDepositRequest {
         address owner;      // Paid the assets (deposit), refunded on cancel
@@ -324,11 +323,13 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit RedeemFeeSet(redeemFee = fee_);
     }
 
-    function setChi(uint192 chi_) external onlyRole(RISK_MANAGER_ROLE) {
-        require(paused,                    "SparkPrimeVault/not-paused");
-        require(chi_ > 0 && chi_ < drip(), "SparkPrimeVault/invalid-chi");
+    function realizeLoss(uint256 loss_) external onlyRole(RISK_MANAGER_ROLE) {
+        require(paused,    "SparkPrimeVault/not-paused");
+        require(loss_ > 0, "SparkPrimeVault/invalid-loss");
 
-        emit ChiSet(chi = chi_);
+        drip();
+
+        emit LossRealized(chi -= uint192(_divup(loss_ * RAY, totalSupply)), loss_);
     }
 
     function pause() external onlyRole(GUARDIAN_ROLE) {
