@@ -39,6 +39,8 @@ interface IERC4626Like {
 
     function convertToAssets(uint256 shares) external view returns (uint256 assets);
 
+    function convertToShares(uint256 assets) external view returns (uint256 shares);
+
     function maxRedeem(address owner) external view returns (uint256);
 
 }
@@ -301,13 +303,12 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit Take(msg.sender, sparkVaultShares_);
     }
 
-    // Mints shares to queued depositors FIFO, up to `maxAssets_` and the available capacity
-    function processDepositQueue(uint256 maxAssets_)
+    function processDepositQueue(uint256 maxSparkVaultShares_)
         external
         onlyRole(REBALANCER_ROLE)
         whenNotPaused
     {
-        _processDepositQueue(maxAssets_);
+        _processDepositQueue(maxSparkVaultShares_);
     }
 
     // Pays queued redeemers FIFO, up to `maxAssets_` net depositAssets and the available liquidity.
@@ -652,10 +653,17 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit Transfer(address(0), recipient_, shares_);
     }
 
-    function _processDepositQueue(uint256 maxAssets_) internal {
-        uint192 chi_    = drip();
-        uint256 budget_ = _min(maxAssets_, availableCapacity() * chi_ / RAY);
-        uint256 i_      = depositHead;
+    function _processDepositQueue(uint256 maxSparkVaultShares_) internal {
+        IERC4626Like sparkVault_ = IERC4626Like(sparkVault);
+
+        uint192 chi_ = drip();
+
+        uint256 budget_ = _min(
+            maxSparkVaultShares_,
+            sparkVault_.convertToShares(availableCapacity() * chi_ / RAY)
+        );
+
+        uint256 i_ = depositHead;
 
         uint256 skipped_;
 
@@ -669,28 +677,21 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
                 continue;
             }
 
-            uint256 value_  = IERC4626Like(sparkVault).convertToAssets(request_.shares);
-            uint256 assets_ = _min(value_, budget_);
+            uint256 sparkVaultShares_ = _min(request_.shares, budget_);
+            uint256 assets_           = sparkVault_.convertToAssets(sparkVaultShares_);
+            uint256 shares_           = assets_ * RAY / chi_;
 
             // A partial fill must mint at least one share, else wait for more room.
-            if (assets_ * RAY / chi_ == 0 && assets_ < value_) break;
-
-            // Rounds up so the accepted sparkVault shares are always worth at least the credited
-            // assets.
-            uint256 sparkVaultShares_ = _divup(request_.shares * assets_, value_);
+            if (shares_ == 0 && sparkVaultShares_ < request_.shares) break;
 
             sparkVaultSharesEncumberedByDeposits -= sparkVaultShares_;
             request_.shares                      -= sparkVaultShares_;
-            budget_                              -= assets_;
-
-            uint256 shares_ = (assets_ * RAY) / chi_;
+            budget_                              -= sparkVaultShares_;
 
             _mint(request_.recipient, shares_);
 
             emit Deposit(request_.owner, request_.recipient, assets_, shares_);
 
-            // TODO: Investigate if we can get stuck here with a request with `shares_` that round
-            //       such that `request_.shares` is never zeroed.
             if (request_.shares != 0) break;  // Partial fill, entry stays at the head
         }
 
