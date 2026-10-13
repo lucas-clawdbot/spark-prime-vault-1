@@ -622,22 +622,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     /*** Request internal helper functions                                                      ***/
     /**********************************************************************************************/
 
-    // Burns shares from `account_`.
-    function _burn(address account_, uint256 shares_) internal {
-        totalSupply         -= shares_;
-        balanceOf[account_] -= shares_;
-
-        emit Transfer(account_, address(0), shares_);
-    }
-
-    // Mints shares to `recipient_` at the current price
-    function _mint(address recipient_, uint256 shares_) internal {
-        totalSupply           += shares_;
-        balanceOf[recipient_] += shares_;
-
-        emit Transfer(address(0), recipient_, shares_);
-    }
-
     function _processDepositQueue(uint256 maxSavingsShares_, uint256 maxRequests_) internal {
         drip();
 
@@ -707,7 +691,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
             emit Redeem(request.owner, request.recipient, assets_, shares_);
 
-            _pay(request.recipient, assets_);
+            IERC4626Like(savings).withdraw(assets_, request.recipient, address(this));
 
             if (request.shares != 0) break;  // Partial fill, entry stays at the head
         }
@@ -716,27 +700,24 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     /**********************************************************************************************/
-    /*** Liquidity internal helper functions                                                    ***/
+    /*** ERC20 internal helper functions                                                        ***/
     /**********************************************************************************************/
 
-    // Pays `assets_` of savings assets from idle cash, pulling any shortfall from the free
-    // savings sleeve.
-    // NOTE: This function assumes that it is gated by a check on `availableLiquidAssets()`.
-    function _pay(address recipient_, uint256 assets_) internal {
-        address asset_ = IERC4626Like(savings).asset();
+    // Burns shares from `account_`.
+    function _burn(address account_, uint256 shares_) internal {
+        totalSupply         -= shares_;
+        balanceOf[account_] -= shares_;
 
-        uint256 balance = IERC20Like(asset_).balanceOf(address(this));
-
-        if (assets_ > balance) {
-            IERC4626Like(savings).withdraw(assets_ - balance, address(this), address(this));
-        }
-
-        SafeERC20.safeTransfer(IERC20OZ(asset_), recipient_, assets_);
+        emit Transfer(account_, address(0), shares_);
     }
 
-    /**********************************************************************************************/
-    /*** Token transfer internal helper functions                                               ***/
-    /**********************************************************************************************/
+    // Mints shares to `recipient_` at the current price
+    function _mint(address recipient_, uint256 shares_) internal {
+        totalSupply           += shares_;
+        balanceOf[recipient_] += shares_;
+
+        emit Transfer(address(0), recipient_, shares_);
+    }
 
     function _transfer(address from_, address to_, uint256 amount_) internal {
         uint256 balance = balanceOf[from_];
