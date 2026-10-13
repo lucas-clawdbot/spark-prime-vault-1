@@ -87,7 +87,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         address indexed recipient,
         uint256 indexed requestId,
         uint256         shares,
-        uint256         fee
+        uint256         fee  // Burned upfront [shares]
     );
 
     event CancelRedeemRequest(uint256 indexed requestId, uint256 shares);
@@ -135,8 +135,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     struct QueuedRedeemRequest {
         address owner;      // Paid the shares (redeem), refunded on cancel
         address recipient;  // Receives the savings asset (redeem)
-        uint256 shares;     // Shares in the redeem queue
-        uint256 fee;        // redeemFee when the request was made [wad]
+        uint256 shares;     // Shares in the redeem queue, net of the fee
     }
 
     /**********************************************************************************************/
@@ -307,13 +306,13 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         _processDepositQueue(maxSavingsShares_, maxRequests_);
     }
 
-    // Pays queued redeemers FIFO, up to `maxAssets_` net savings assets and the available liquidity.
-    function processRedeemQueue(uint256 maxAssets_)
+    // Pays queued redeemers FIFO, burning up to `maxShares_` shares within the available liquidity.
+    function processRedeemQueue(uint256 maxShares_, uint256 maxRequests_)
         external
         onlyRole(REBALANCER_ROLE)
         whenNotPaused
     {
-        _processRedeemQueue(maxAssets_);
+        _processRedeemQueue(maxShares_, maxRequests_);
     }
 
     function setRedeemFee(uint256 fee_) external onlyRole(RISK_MANAGER_ROLE) {
@@ -430,19 +429,25 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         _transfer(msg.sender, address(this), shares_);
 
+        // The fee is burned upfront in shares and is not refunded on cancel.
+        uint256 fee_ = _divup(shares_ * redeemFee, WAD);
+
+        _burn(address(this), fee_);
+
+        uint256 queuedShares_ = shares_ - fee_;
+
         requestId_ = redeemQueue.length;
 
-        uint256 fee_ = redeemFee;
+        redeemQueue.push(QueuedRedeemRequest(msg.sender, recipient_, queuedShares_));
 
-        redeemQueue.push(QueuedRedeemRequest(msg.sender, recipient_, shares_, fee_));
-
-        sharesEncumberedByRedeems += shares_;
+        sharesEncumberedByRedeems += queuedShares_;
 
         emit RedeemRequest(msg.sender, recipient_, requestId_, shares_, fee_);
 
         // Fill this request from available liquidity, only while nobody is queued ahead.
         if (redeemInstantly_) {
-            _processRedeemQueue(type(uint256).max);
+            redeemHead = requestId_;
+            _processRedeemQueue(type(uint256).max, 1);
         }
     }
 
@@ -679,49 +684,40 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         depositHead = i_;
     }
 
-    // Pays queued redeems FIFO up to `maxAssets_` net savings assets, burning the held shares.
-    function _processRedeemQueue(uint256 maxAssets_) internal {
-        uint192 chi_    = drip();
-        uint256 budget_ = _min(maxAssets_, availableLiquidAssets());
-        uint256 i_       = redeemHead;
+    // Pays queued redeems FIFO, burning up to `maxShares_` held shares within the available
+    // liquidity.
+    function _processRedeemQueue(uint256 maxShares_, uint256 maxRequests_) internal {
+        drip();
 
-        while (i_ < redeemQueue.length) {
-            QueuedRedeemRequest storage request_ = redeemQueue[i_++];
+        uint256 remaining_ = _min(maxShares_, convertToShares(availableLiquidAssets()));
 
-            uint256 shares_ = request_.shares;
-            uint256 fee_    = request_.fee;
+        uint256 i_   = redeemHead;
+        uint256 end_ = i_ + _min(redeemQueue.length - i_, maxRequests_);
 
-            // Partial fill: the largest share amount whose net fits the budget, rounded down.
-            if (_getNet(shares_, fee_, chi_) > budget_) {
-                // TODO: Add brackets to explicitly define OOO.
-                shares_ = budget_ * WAD / (WAD - fee_) * RAY / chi_;
-            }
+        for (; i_ < end_ && remaining_ != 0; ++i_) {
+            QueuedRedeemRequest storage request = redeemQueue[i_];
 
-            uint256 net_ = _getNet(shares_, fee_, chi_);
+            uint256 requestShares_ = request.shares;
 
-            // TODO: Investigate if we can get stuck here with a request with `shares_` that round
-            //       such that `request_.shares` is never zeroed.
-            if (net_ == 0 && shares_ < request_.shares) break;  // Budget too small to pay anything
+            if (requestShares_ == 0) continue;  // Cancelled
+
+            uint256 shares_ = _min(requestShares_, remaining_);
+            uint256 assets_ = convertToAssets(shares_);
 
             sharesEncumberedByRedeems -= shares_;
-            request_.shares           -= shares_;
-            budget_                   -= net_;
+            request.shares            -= shares_;
+            remaining_                -= shares_;
 
             _burn(address(this), shares_);
 
-            emit Redeem(request_.owner, request_.recipient, net_, shares_);
+            emit Redeem(request.owner, request.recipient, assets_, shares_);
 
-            _pay(request_.recipient, net_);
+            _pay(request.recipient, assets_);
 
-            if (request_.shares != 0) break;  // Partial fill, entry stays at the head
+            if (request.shares != 0) break;  // Partial fill, entry stays at the head
         }
 
         redeemHead = i_;
-    }
-
-    function _getNet(uint256 shares_, uint256 fee_, uint192 chi_) internal pure returns (uint256) {
-        uint256 gross_ = (shares_ * chi_) / RAY;
-        return gross_ - _divup(gross_ * fee_, WAD);  // The fee stays in the vault
     }
 
     /**********************************************************************************************/
