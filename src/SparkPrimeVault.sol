@@ -46,7 +46,6 @@ interface IERC4626Like {
 // TODO: Remove USDC custody altogether, just use take() to get spUSDC
 // TODO: Clean up roles
 // TODO: Add more validation to setters
-// TODO: Change Request structs to be bespoke (remove fee)
 // TODO: Should processDepositQueue and processRedeemQueue both be permissioned, if so, should we make all withdrawals async?
 // TODO: Refactor setChi to use nominal
 // TODO: requestDepositWithPermit?
@@ -127,11 +126,16 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     event RedeemFeeSet(uint256 fee);
 
-    // TODO: DepositRequest (without fee) and RedeemRequest (with fee).
-    struct Request {
-        address owner;      // Paid the assets (deposit) or the shares (redeem), refunded on cancel
-        address recipient;  // Receives the spPRIME (deposit) or the USDC (redeem)
-        uint256 amount;     // spUSDC shares in the deposit queue, spPRIME shares in the redeem queue
+    struct QueuedDepositRequest {
+        address owner;      // Paid the assets (deposit), refunded on cancel
+        address recipient;  // Receives the spPRIME (deposit)
+        uint256 amount;     // spUSDC shares in the deposit queue
+    }
+
+    struct QueuedRedeemRequest {
+        address owner;      // Paid the shares (redeem), refunded on cancel
+        address recipient;  // Receives the USDC (redeem)
+        uint256 amount;     // spPRIME shares in the redeem queue
         uint256 fee;        // redeemFee when the request was made [wad]
     }
 
@@ -191,8 +195,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     uint256 public totalQueuedDepositShares;  // spUSDC held for queued deposits
     uint256 public totalQueuedRedeemShares;   // spPRIME escrowed for queued redeems
 
-    Request[] public depositQueue;
-    Request[] public redeemQueue;
+    QueuedDepositRequest[] public depositQueue;
+    QueuedRedeemRequest[]  public redeemQueue;
 
     uint256 public depositHead;  // First unfilled index of the deposit queue
     uint256 public redeemHead;   // First unfilled index of the redeem queue
@@ -268,7 +272,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        // TODO: Add additional validation 
+        // TODO: Add additional validation
         emit MinimumsSet(minDeposit = minDeposit_, minWithdraw = minWithdraw_);
     }
 
@@ -326,7 +330,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256 skipped_;
 
         for (; i_ < depositQueue.length; ++i_) {
-            Request storage request_ = depositQueue[i_];
+            QueuedDepositRequest storage request_ = depositQueue[i_];
 
             // Cancelled: skip, but bound the walk so the head still advances over a long run.
             if (request_.amount == 0) {
@@ -426,7 +430,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         requestId_ = depositQueue.length;
 
-        depositQueue.push(Request(msg.sender, recipient_, shares_, 0));
+        depositQueue.push(QueuedDepositRequest(msg.sender, recipient_, shares_));
 
         totalQueuedDepositShares += shares_;
 
@@ -443,7 +447,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     // Refunds a queued deposit to its owner, with the spUSDC yield it earned while waiting.
     function cancelDepositRequest(uint256 requestId_, address recipient_) whenNotPaused external {
-        Request memory request_ = depositQueue[requestId_];
+        QueuedDepositRequest memory request_ = depositQueue[requestId_];
 
         require(request_.amount != 0, "SparkPrimeVault/no-request");
 
@@ -486,7 +490,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         uint256 fee_ = redeemFee;
 
-        redeemQueue.push(Request(msg.sender, recipient_, shares_, fee_));
+        redeemQueue.push(QueuedRedeemRequest(msg.sender, recipient_, shares_, fee_));
 
         totalQueuedRedeemShares += shares_;
 
@@ -499,7 +503,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function cancelRedeemRequest(uint256 requestId_, address recipient_) whenNotPaused external {
-        Request memory request_ = redeemQueue[requestId_];
+        QueuedRedeemRequest memory request_ = redeemQueue[requestId_];
 
         require(request_.amount != 0, "SparkPrimeVault/no-request");
 
@@ -699,7 +703,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256 skipped_;
 
         for (; i_ < redeemQueue.length; ++i_) {
-            Request storage request_ = redeemQueue[i_];
+            QueuedRedeemRequest storage request_ = redeemQueue[i_];
 
             uint256 shares_ = request_.amount;
 
