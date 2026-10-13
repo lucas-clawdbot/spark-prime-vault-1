@@ -438,12 +438,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         pendingRedeemShares += queuedShares_;
 
         emit RedeemRequest(msg.sender, recipient_, requestId_, shares_, fee_);
-
-        // Fill this request from available liquidity, only while nobody is queued ahead.
-        if (redeemInstantly_) {
-            redeemHead = requestId_;
-            _processRedeemQueue(type(uint256).max, 1);
-        }
     }
 
     function cancelRedeemRequest(uint256 requestId_, address recipient_) whenNotPaused external {
