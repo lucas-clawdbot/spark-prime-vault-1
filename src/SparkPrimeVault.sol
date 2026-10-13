@@ -41,7 +41,7 @@ interface IERC4626Like {
 
     function convertToShares(uint256 assets) external view returns (uint256 shares);
 
-    function maxRedeem(address owner) external view returns (uint256);
+    function maxWithdraw(address owner) external view returns (uint256);
 
 }
 
@@ -191,7 +191,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     uint256 public totalSupply;
 
-    uint256 public savingsSharesEncumberedByDeposits;
+    uint256 public pendingDepositShares;
     uint256 public sharesEncumberedByRedeems;
 
     QueuedDepositRequest[] public depositQueue;
@@ -299,12 +299,12 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit Take(msg.sender, savingsShares_);
     }
 
-    function processDepositQueue(uint256 maxSavingsShares_)
+    function processDepositQueue(uint256 maxSavingsShares_, uint256 maxRequests_)
         external
         onlyRole(REBALANCER_ROLE)
         whenNotPaused
     {
-        _processDepositQueue(maxSavingsShares_);
+        _processDepositQueue(maxSavingsShares_, maxRequests_);
     }
 
     // Pays queued redeemers FIFO, up to `maxAssets_` net savings assets and the available liquidity.
@@ -356,7 +356,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         drip();
 
-        bool depositInstantly_ = savingsSharesEncumberedByDeposits == 0;
+        bool depositInstantly_ = pendingDepositShares == 0;
 
         SafeERC20.safeTransferFrom(
             IERC20OZ(IERC4626Like(savings).asset()),
@@ -372,13 +372,14 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         depositQueue
             .push(QueuedDepositRequest(msg.sender, recipient_, savingsShares_));
 
-        savingsSharesEncumberedByDeposits += savingsShares_;
+        pendingDepositShares += savingsShares_;
 
         emit DepositRequest(msg.sender, recipient_, requestId_, assets_);
 
         // Fill this request, only while nobody is queued ahead.
         if (depositInstantly_) {
-            _processDepositQueue(type(uint256).max);
+            depositHead = requestId_;
+            _processDepositQueue(type(uint256).max, 1);
         }
     }
 
@@ -403,7 +404,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         delete depositQueue[requestId_];
 
-        savingsSharesEncumberedByDeposits -= request_.shares;
+        pendingDepositShares -= request_.shares;
 
         uint256 assets_ =
             IERC4626Like(savings).redeem(request_.shares, recipient_, address(this));
@@ -602,28 +603,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         return maxCapacity > totalSupply ? maxCapacity - totalSupply : 0;
     }
 
-    function unencumberedsavingsShares() public view returns (uint256) {
-        return
-            IERC20Like(savings).balanceOf(address(this)) - savingsSharesEncumberedByDeposits;
-    }
-
-    function maxRedeemableUnencumberedShares() public view returns (uint256) {
-        uint256 maxRedeemableShares_ = IERC4626Like(savings).maxRedeem(address(this));
-
-        return maxRedeemableShares_ > savingsSharesEncumberedByDeposits
-            ? maxRedeemableShares_ - savingsSharesEncumberedByDeposits
-            : 0;
-    }
-
     function availableLiquidAssets() public view returns (uint256) {
-        uint256 maxRedeemableUnencumberedShares_ = maxRedeemableUnencumberedShares();
-
-        return
-            (
-                maxRedeemableUnencumberedShares_ > 0
-                    ? IERC4626Like(savings).convertToAssets(maxRedeemableUnencumberedShares_)
-                    : 0
-            );
+        return IERC4626Like(savings).maxWithdraw(address(this));
     }
 
     function implementation() external view returns (address) {
@@ -657,43 +638,42 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit Transfer(address(0), recipient_, shares_);
     }
 
-    function _processDepositQueue(uint256 maxSavingsShares_) internal {
+    function _processDepositQueue(uint256 maxSavingsShares_, uint256 maxRequests_) internal {
         drip();
 
-        uint256 maxAdmissibleAssets = convertToAssets(availableCapacity());
-
-        uint256 maxProcessablesavingsShares = _min(
+        // Convert the maximum admissible assets into savings shares denomination
+        uint256 remaining_ = _min(
             maxSavingsShares_,
-            IERC4626Like(savings).convertToShares(maxAdmissibleAssets)
+            IERC4626Like(savings).convertToShares(convertToAssets(availableCapacity()))
         );
 
-        uint256 i_ = depositHead;
+        // Process the deposit queue up to the maximum number of requests or
+        // until there are no more remaining savings shares
+        uint256 i_   = depositHead;
+        uint256 end_ = i_ + _min(depositQueue.length - i_, maxRequests_);
 
-        while (i_ < depositQueue.length) {
-            QueuedDepositRequest storage request_ = depositQueue[i_++];
+        for (; i_ < end_ && remaining_ != 0; ++i_) {
+            QueuedDepositRequest storage request = depositQueue[i_];
 
-            uint256 requestsavingsShares_ = request_.shares;
+            uint256 requestSavingsShares_ = request.shares;
 
-            if (requestsavingsShares_ == 0) continue;
+            if (requestSavingsShares_ == 0) continue;  // Cancelled
 
-            uint256 savingsSharesToProcess_ =
-                _min(requestsavingsShares_, maxProcessablesavingsShares);
+            uint256 savingsShares_ = _min(requestSavingsShares_, remaining_);
 
-            uint256 assets_ = IERC4626Like(savings).convertToAssets(savingsSharesToProcess_);
+            // Convert processed savings shares into vault shares
+            uint256 assets_ = IERC4626Like(savings).convertToAssets(savingsShares_);
             uint256 shares_ = convertToShares(assets_);
 
-            // A partial fill must mint at least one share, else wait for more room.
-            if (shares_ == 0 && savingsSharesToProcess_ < requestsavingsShares_) break;
+            pendingDepositShares -= savingsShares_;
+            request.shares       -= savingsShares_;
+            remaining_           -= savingsShares_;
 
-            savingsSharesEncumberedByDeposits -= savingsSharesToProcess_;
-            request_.shares                      -= savingsSharesToProcess_;
-            maxProcessablesavingsShares                              -= savingsSharesToProcess_;
+            _mint(request.recipient, shares_);
 
-            _mint(request_.recipient, shares_);
+            emit Deposit(request.owner, request.recipient, assets_, shares_);
 
-            emit Deposit(request_.owner, request_.recipient, assets_, shares_);
-
-            if (request_.shares != 0) break;  // Partial fill, entry stays at the head
+            if (requestSavingsShares_ != 0) break;  // Partial fill, entry stays at the head
         }
 
         depositHead = i_;
