@@ -404,6 +404,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         pendingDepositSavingsShares -= request_.shares;
 
+        // REVIEW PATCH F-1: only the owner may choose the refund recipient.
+        if (msg.sender != request_.owner) recipient_ = request_.owner;
+
         uint256 assets_ =
             IERC4626Like(savings).redeem(request_.shares, recipient_, address(this));
 
@@ -455,6 +458,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         );
 
         delete redeemQueue[requestId_];
+
+        // REVIEW PATCH F-1: only the owner may choose the refund recipient.
+        if (msg.sender != request_.owner) recipient_ = request_.owner;
 
         _transfer(address(this), recipient_, request_.shares);
 
@@ -655,7 +661,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
             emit Deposit(request.owner, request.recipient, assets_, shares_);
 
-            if (requestSavingsShares_ != 0) break;  // Partial fill, entry stays at the head
+            if (request.shares != 0) break;  // Partial fill, entry stays at the head (REVIEW PATCH F-3)
         }
 
         depositHead = i_;

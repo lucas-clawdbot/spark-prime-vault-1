@@ -19,6 +19,9 @@ contract MockUSDC is ERC20 {
 
 /// @dev Local (non-fork) harness: real spUSDC `SparkVault` code deployed behind a proxy over a
 ///      6-decimal mock USDC, and the `SparkPrimeVault` under test on top of it. No RPC needed.
+///      Both indexes start "ugly" (spUSDC chi ~1.0476e27, spPRIME chi ~1.0098e27) with VSR frozen
+///      at RAY; tests that want accrual set a rate explicitly. `src/` carries review patches F-1
+///      (cancel refunds go to request.owner unless the owner calls) and F-3 (deposit loop break).
 ///
 ///      Actors
 ///        spUSDC side : spAdmin (DEFAULT_ADMIN + sets cap/bounds), spSetter (VSR), spTaker (USDC out)
@@ -38,6 +41,10 @@ contract LocalTestBase is Test {
     uint256 constant TEN_PCT_VSR   = 1.000000003022265980097387650e27;
     uint256 constant FORTY_PCT_VSR = 1.000000010669464688489416886e27;
     uint256 constant MAX_VSR       = 1.000000021979553151239153027e27;  // 100% APY
+
+    // "Ugly" rates used by setUp to make both indexes non-trivial.
+    uint256 constant UGLY_SP_VSR    = 1.000000001356138789912371417e27;  // ~4.37% APY
+    uint256 constant UGLY_PRIME_VSR = 1.000000000906634632573938893e27;  // ~2.90% APY
 
     // spUSDC actors
     address internal spAdmin  = makeAddr("spAdmin");
@@ -85,6 +92,15 @@ contract LocalTestBase is Test {
         spUsdc.setVsrBounds(RAY, MAX_VSR);
         vm.stopPrank();
 
+        // Make spUSDC's exchange rate "ugly": ~4.37% APY for 397 days, then freeze it at RAY so
+        // tests that want accrual set a rate explicitly. chi_s ends at ~1.0476...e27 (not clean).
+        vm.warp(1_700_000_000);
+        vm.prank(spSetter);
+        spUsdc.setVsr(UGLY_SP_VSR);
+        vm.warp(block.timestamp + 397 days + 12345);
+        vm.prank(spSetter);
+        spUsdc.setVsr(RAY);  // drips internally
+
         vault = SparkPrimeVault(
             address(new ERC1967Proxy(
                 address(new SparkPrimeVault()),
@@ -106,6 +122,16 @@ contract LocalTestBase is Test {
         vault.setMaxRedeemFee(vault.MAX_REDEEM_FEE());
         vault.setVSRBounds(RAY, MAX_VSR);
         vm.stopPrank();
+
+        // Make spPRIME's index ugly too (~2.9% APY for 123 days), then freeze at RAY.
+        vm.prank(setter);
+        vault.setVSR(UGLY_PRIME_VSR);
+        vm.warp(block.timestamp + 123 days + 6789);
+        vm.prank(setter);
+        vault.setVSR(RAY);  // drips internally
+
+        assertGt(spUsdc.nowChi(), RAY, "harness: spUSDC chi not ugly");
+        assertGt(vault.nowChi(),  RAY, "harness: spPRIME chi not ugly");
     }
 
     /**********************************************************************************************/

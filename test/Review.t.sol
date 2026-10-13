@@ -19,6 +19,7 @@ interface ISpUsdc {
 }
 
 // Proof-of-concept tests for the review findings. Each test name carries the finding id.
+// NOTE: src/ carries review patches for F-1 and F-3, so those tests now assert the FIXED behaviour.
 contract ReviewTest is TestBase {
 
     IERC20Full internal usdcT = IERC20Full(address(usdc));
@@ -71,8 +72,9 @@ contract ReviewTest is TestBase {
         vm.prank(guardian);
         vault.cancelDepositRequest(id, thief);
 
-        assertApproxEqAbs(usdcT.balanceOf(thief), 100_000e6, 2);
-        assertEq(usdcT.balanceOf(bob), 900_000e6);
+        // PATCHED (F-1): guardian cancel refunds the owner, `recipient_` is ignored.
+        assertEq(usdcT.balanceOf(thief), 0);
+        assertApproxEqAbs(usdcT.balanceOf(bob), 1_000_000e6, 2);
     }
 
     function test_F1_guardianCancelRedeemRedirectsShares() public {
@@ -85,8 +87,9 @@ contract ReviewTest is TestBase {
         vm.prank(guardian);
         vault.cancelRedeemRequest(id, thief);
 
-        assertEq(vault.balanceOf(thief), shares);
-        assertEq(vault.balanceOf(alice), 0);
+        // PATCHED (F-1): guardian cancel returns the escrowed shares to the owner.
+        assertEq(vault.balanceOf(thief), 0);
+        assertEq(vault.balanceOf(alice), shares);
     }
 
     /*******************************************************************************************/
@@ -157,14 +160,11 @@ contract ReviewTest is TestBase {
         vm.prank(rebalancer);
         vault.processDepositQueue(type(uint256).max, 10);
 
+        // PATCHED (F-3): both requests fill in one call.
         assertGt(vault.balanceOf(bob),   0, "bob filled");
-        assertEq(vault.balanceOf(carol), 0, "carol NOT filled despite maxRequests=10");
-        assertGt(vault.pendingDepositSavingsShares(), 0);
-
-        // A second call is needed for carol.
-        vm.prank(rebalancer);
-        vault.processDepositQueue(type(uint256).max, 10);
-        assertGt(vault.balanceOf(carol), 0);
+        assertGt(vault.balanceOf(carol), 0, "carol filled in the same call");
+        assertEq(vault.pendingDepositSavingsShares(), 0);
+        assertEq(vault.depositHead(), 3);
     }
 
     /*******************************************************************************************/

@@ -14,7 +14,7 @@ contract LocalSmokeTest is LocalTestBase {
         _setPrimeVsr(FOUR_PCT_VSR);
 
         _deposit(alice, 1_000_000e6);
-        assertEq(vault.balanceOf(alice), 1_000_000e6);
+        assertApproxEqAbs(vault.assetsOf(alice), 1_000_000e6, 2);  // indexes are ugly, not 1:1
         assertApproxEqAbs(spUsdc.convertToAssets(_vaultSpUsdc()), 1_000_000e6, 1);
 
         _warpAndDrip(365 days);
