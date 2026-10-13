@@ -185,7 +185,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     uint256 public totalSupply;
 
-    uint256 public pendingDepositShares;
+    uint256 public pendingDepositSavingsShares;
     uint256 public pendingRedeemShares;
 
     Request[] public depositQueue;
@@ -245,7 +245,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     function _authorizeUpgrade(address) internal view override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     /**********************************************************************************************/
-    /*** Role-based external functions                                                          ***/
+    /*** Admin external functions                                                               ***/
     /**********************************************************************************************/
 
     function setCapacity(uint256 capacity_) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -272,6 +272,15 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         emit VSRBoundsSet(minVSR = minVSR_, maxVSR = maxVSR_);
     }
+
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        paused = false;
+        emit Unpaused();
+    }
+
+    /**********************************************************************************************/
+    /*** Role-based external functions                                                          ***/
+    /**********************************************************************************************/
 
     function setVSR(uint256 vsr_) external onlyRole(SETTER_ROLE) {
         require(vsr_ >= minVSR, "SparkPrimeVault/vsr-too-low");
@@ -327,11 +336,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit Paused();
     }
 
-    function unpause() external onlyRole(UNPAUSER_ROLE) {
-        paused = false;
-        emit Unpaused();
-    }
-
     /**********************************************************************************************/
     /*** Request functions                                                                      ***/
     /**********************************************************************************************/
@@ -350,7 +354,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         drip();
 
-        bool depositInstantly_ = pendingDepositShares == 0;
+        bool depositInstantly_ = pendingDepositSavingsShares == 0;
 
         SafeERC20.safeTransferFrom(
             IERC20OZ(IERC4626Like(savings).asset()),
@@ -366,7 +370,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         depositQueue
             .push(Request(msg.sender, recipient_, savingsShares_));
 
-        pendingDepositShares += savingsShares_;
+        pendingDepositSavingsShares += savingsShares_;
 
         emit DepositRequest(msg.sender, recipient_, requestId_, assets_);
 
@@ -398,7 +402,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         delete depositQueue[requestId_];
 
-        pendingDepositShares -= request_.shares;
+        pendingDepositSavingsShares -= request_.shares;
 
         uint256 assets_ =
             IERC4626Like(savings).redeem(request_.shares, recipient_, address(this));
@@ -643,7 +647,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             uint256 assets_ = IERC4626Like(savings).convertToAssets(savingsShares_);
             uint256 shares_ = convertToShares(assets_);
 
-            pendingDepositShares -= savingsShares_;
+            pendingDepositSavingsShares -= savingsShares_;
             request.shares       -= savingsShares_;
             remaining_           -= savingsShares_;
 
