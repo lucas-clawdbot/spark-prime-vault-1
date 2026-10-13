@@ -90,8 +90,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     event CancelRedeemRequest(uint256 indexed requestId, uint256 shares);
 
-    // Emitted when depositAssets are paid to `recipient`, instantly or when a queued redeem is
-    // filled.
     event Redeem(
         address indexed owner,
         address indexed recipient,
@@ -409,8 +407,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         emit CancelDepositRequest(requestId_, assets_);
     }
 
-    // Escrows `shares_` and pays `recipient_` as much as the liquidity allows, the rest waits in
-    // the redeem queue. Returns the queue index.
     function requestRedeem(uint256 shares_, address recipient_)
         external
         whenNotPaused
@@ -420,10 +416,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         require(
             (shares_ != 0) && ((shares_ * drip()) / RAY >= minWithdraw),
-            "SparkPrimeVault/below-minimum"
+            "SparkPrimeVault/shares-below-minimum"
         );
-
-        bool redeemInstantly_ = sharesEncumberedByRedeems == 0;
 
         _transfer(msg.sender, address(this), shares_);
 
@@ -436,11 +430,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         sharesEncumberedByRedeems += shares_;
 
         emit RedeemRequest(msg.sender, recipient_, requestId_, shares_, fee_);
-
-        // Fill this request from available liquidity, only while nobody is queued ahead.
-        if (redeemInstantly_) {
-            _processRedeemQueue(type(uint256).max);
-        }
     }
 
     function cancelRedeemRequest(uint256 requestId_, address recipient_) whenNotPaused external {
