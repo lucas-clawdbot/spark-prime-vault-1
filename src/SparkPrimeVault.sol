@@ -126,16 +126,11 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     event RedeemFeeSet(uint256 fee);
 
-    struct QueuedDepositRequest {
-        address owner;      // Paid the assets (deposit), refunded on cancel
-        address recipient;  // Receives the shares (deposit)
-        uint256 shares;     // savings shares in the deposit queue
-    }
 
-    struct QueuedRedeemRequest {
-        address owner;      // Paid the shares (redeem), refunded on cancel
-        address recipient;  // Receives the savings asset (redeem)
-        uint256 shares;     // Shares in the redeem queue, net of the fee
+    struct Request {
+        address owner;      // Recipient of refunds on cancel
+        address recipient;  // Recipient of proceeds on fill
+        uint256 shares;     // Shares in the request, can be savingsShares or shares
     }
 
     /**********************************************************************************************/
@@ -191,10 +186,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     uint256 public totalSupply;
 
     uint256 public pendingDepositShares;
-    uint256 public sharesEncumberedByRedeems;
+    uint256 public pendingRedeemShares;
 
-    QueuedDepositRequest[] public depositQueue;
-    QueuedRedeemRequest[]  public redeemQueue;
+    Request[] public depositQueue;
+    Request[] public redeemQueue;
 
     uint256 public depositHead;  // First unfilled index of the deposit queue
     uint256 public redeemHead;   // First unfilled index of the redeem queue
@@ -369,7 +364,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         requestId_ = depositQueue.length;
 
         depositQueue
-            .push(QueuedDepositRequest(msg.sender, recipient_, savingsShares_));
+            .push(Request(msg.sender, recipient_, savingsShares_));
 
         pendingDepositShares += savingsShares_;
 
@@ -392,7 +387,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
     // Refunds a queued deposit to its owner, with the savings yield it earned while waiting.
     function cancelDepositRequest(uint256 requestId_, address recipient_) whenNotPaused external {
-        QueuedDepositRequest memory request_ = depositQueue[requestId_];
+        Request memory request_ = depositQueue[requestId_];
 
         require(request_.shares != 0, "SparkPrimeVault/no-request");
 
@@ -425,7 +420,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             "SparkPrimeVault/below-minimum"
         );
 
-        bool redeemInstantly_ = sharesEncumberedByRedeems == 0;
+        bool redeemInstantly_ = pendingRedeemShares == 0;
 
         _transfer(msg.sender, address(this), shares_);
 
@@ -438,9 +433,9 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         requestId_ = redeemQueue.length;
 
-        redeemQueue.push(QueuedRedeemRequest(msg.sender, recipient_, queuedShares_));
+        redeemQueue.push(Request(msg.sender, recipient_, queuedShares_));
 
-        sharesEncumberedByRedeems += queuedShares_;
+        pendingRedeemShares += queuedShares_;
 
         emit RedeemRequest(msg.sender, recipient_, requestId_, shares_, fee_);
 
@@ -452,7 +447,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function cancelRedeemRequest(uint256 requestId_, address recipient_) whenNotPaused external {
-        QueuedRedeemRequest memory request_ = redeemQueue[requestId_];
+        Request memory request_ = redeemQueue[requestId_];
 
         require(request_.shares != 0, "SparkPrimeVault/no-request");
 
@@ -465,7 +460,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
         _transfer(address(this), recipient_, request_.shares);
 
-        sharesEncumberedByRedeems -= request_.shares;
+        pendingRedeemShares -= request_.shares;
 
         emit CancelRedeemRequest(requestId_, request_.shares);
     }
@@ -658,7 +653,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256 end_ = i_ + _min(depositQueue.length - i_, maxRequests_);
 
         for (; i_ < end_ && remaining_ != 0; ++i_) {
-            QueuedDepositRequest storage request = depositQueue[i_];
+            Request storage request = depositQueue[i_];
 
             uint256 requestSavingsShares_ = request.shares;
 
@@ -695,7 +690,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256 end_ = i_ + _min(redeemQueue.length - i_, maxRequests_);
 
         for (; i_ < end_ && remaining_ != 0; ++i_) {
-            QueuedRedeemRequest storage request = redeemQueue[i_];
+            Request storage request = redeemQueue[i_];
 
             uint256 requestShares_ = request.shares;
 
@@ -704,7 +699,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
             uint256 shares_ = _min(requestShares_, remaining_);
             uint256 assets_ = convertToAssets(shares_);
 
-            sharesEncumberedByRedeems -= shares_;
+            pendingRedeemShares -= shares_;
             request.shares            -= shares_;
             remaining_                -= shares_;
 
