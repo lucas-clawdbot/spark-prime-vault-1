@@ -311,13 +311,12 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         _processDepositQueue(maxSparkVaultShares_);
     }
 
-    // Pays queued redeemers FIFO, up to `maxAssets_` net depositAssets and the available liquidity.
-    function processRedeemQueue(uint256 maxAssets_)
+    function processRedeemQueue(uint256 maxShares_)
         external
         onlyRole(REBALANCER_ROLE)
         whenNotPaused
     {
-        _processRedeemQueue(maxAssets_);
+        _processRedeemQueue(maxShares_);
     }
 
     function setRedeemFee(uint256 fee_) external onlyRole(RISK_MANAGER_ROLE) {
@@ -698,33 +697,38 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         depositHead = i_;
     }
 
-    // Pays queued redeems FIFO up to `maxAssets_` net depositAssets, burning the held shares.
-    function _processRedeemQueue(uint256 maxAssets_) internal {
-        uint192 chi_    = drip();
-        uint256 budget_ = _min(maxAssets_, availableLiquidAssets());
-        uint256 i_       = redeemHead;
+    // Pays queued redeemers FIFO, burning up to `maxShares_` of the escrowed shares and never
+    // paying past the available liquidity.
+    function _processRedeemQueue(uint256 maxShares_) internal {
+        uint192 chi_       = drip();
+        uint256 budget_    = maxShares_;
+        uint256 liquidity_ = availableLiquidAssets();
+        uint256 i_         = redeemHead;
+
+        uint256 skipped_;
 
         for (; i_ < redeemQueue.length; ++i_) {
             QueuedRedeemRequest storage request_ = redeemQueue[i_];
 
-            uint256 shares_ = request_.shares;
-            uint256 fee_    = request_.fee;
+            // Cancelled: skip, but bound the walk so the head still advances over a long run.
+            if (request_.shares == 0) {
+                if (++skipped_ == 500) break;
 
-            // Partial fill: the largest share amount whose net fits the budget, rounded down.
-            if (_getNet(shares_, fee_, chi_) > budget_) {
-                // TODO: Add brackets to explicitly define OOO.
-                shares_ = budget_ * WAD / (WAD - fee_) * RAY / chi_;
+                continue;
             }
 
-            uint256 net_ = _getNet(shares_, fee_, chi_);
+            uint256 fee_ = request_.fee;
 
-            // TODO: Investigate if we can get stuck here with a request with `shares_` that round
-            //       such that `request_.shares` is never zeroed.
+            uint256 maxPayableShares_ = ((liquidity_ * WAD) / (WAD - fee_)) * RAY / chi_;         // Shares the liquidity can cover, rounded down.
+            uint256 shares_           = _min(request_.shares, _min(budget_, maxPayableShares_));  // Shares filled from this request.
+            uint256 net_              = _getNet(shares_, fee_, chi_);                             // Deposit assets paid to the recipient after fees.
+
             if (net_ == 0 && shares_ < request_.shares) break;  // Budget too small to pay anything
 
             sharesEncumberedByRedeems -= shares_;
             request_.shares           -= shares_;
-            budget_                   -= net_;
+            budget_                   -= shares_;
+            liquidity_                -= net_;
 
             _burn(address(this), shares_);
 
