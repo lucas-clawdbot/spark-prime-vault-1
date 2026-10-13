@@ -53,7 +53,6 @@ interface IERC4626Like {
 // TODO: Ask Sam if we need to add capability for reducing deposit/redeem request amounts
 // TODO: Ask Sam if we need to add capability for updating receiver in deposit/redeem requests
 // TODO: Separate role based functions into dedicated sections?
-// TODO: Remove functions in Liquidity internal helper functions?
 // TODO: Cancels are now `whenNotPaused` original version lets you cancel even when paused, check is this intended?
 
 /// @dev If the inheritance is updated, the functions in `initialize` must be updated as well.
@@ -725,7 +724,7 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
 
             emit Redeem(request_.owner, request_.recipient, net_, shares_);
 
-            _pay(request_.recipient, net_);
+            IERC4626Like(sparkVault).withdraw(net_, request_.recipient, address(this));
 
             if (request_.shares != 0) break;  // Partial fill, entry stays at the head
         }
@@ -736,23 +735,6 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     function _getNet(uint256 shares_, uint256 fee_, uint192 chi_) internal pure returns (uint256) {
         uint256 gross_ = (shares_ * chi_) / RAY;
         return gross_ - _divup(gross_ * fee_, WAD);  // The fee stays in the vault
-    }
-
-    /**********************************************************************************************/
-    /*** Liquidity internal helper functions                                                    ***/
-    /**********************************************************************************************/
-
-    // Pays `assets_` of depositAssets from idle cash, pulling any shortfall from the free
-    // sparkVault sleeve.
-    // NOTE: This function assumes that it is gated by a check on `availableLiquidAssets()`.
-    function _pay(address recipient_, uint256 assets_) internal {
-        uint256 balance = IERC20Like(depositAsset).balanceOf(address(this));
-
-        if (assets_ > balance) {
-            IERC4626Like(sparkVault).withdraw(assets_ - balance, address(this), address(this));
-        }
-
-        SafeERC20.safeTransfer(IERC20OZ(depositAsset), recipient_, assets_);
     }
 
     /**********************************************************************************************/
