@@ -45,6 +45,7 @@ interface IERC4626Like {
 
 }
 
+// TODO: Rename "sparkVault" to "savings" everywhere.
 // TODO: _processDepositQueue and _processRedeemQueue should take in a variable that allows netting withdrawals against deposits (there should be a third function)
 // TODO: Clean up roles
 // TODO: Add more validation to setters
@@ -585,6 +586,10 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         return (shares_ * nowChi()) / RAY;
     }
 
+    function convertToShares(uint256 assets_) public view returns (uint256) {
+        return (assets_ * RAY) / nowChi();
+    }
+
     function totalAssets() external view returns (uint256) {
         return convertToAssets(totalSupply);
     }
@@ -654,39 +659,36 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
     }
 
     function _processDepositQueue(uint256 maxSparkVaultShares_) internal {
-        IERC4626Like sparkVault_ = IERC4626Like(sparkVault);
+        drip();
 
-        uint192 chi_ = drip();
+        uint256 maxAdmissibleAssets = convertToAssets(availableCapacity());
 
-        uint256 budget_ = _min(
+        uint256 maxProcessableSparkVaultShares = _min(
             maxSparkVaultShares_,
-            sparkVault_.convertToShares(availableCapacity() * chi_ / RAY)
+            IERC4626Like(sparkVault).convertToShares(maxAdmissibleAssets)
         );
 
         uint256 i_ = depositHead;
 
-        uint256 skipped_;
+        while (i_ < depositQueue.length) {
+            QueuedDepositRequest storage request_ = depositQueue[i_++];
 
-        for (; i_ < depositQueue.length; ++i_) {
-            QueuedDepositRequest storage request_ = depositQueue[i_];
+            uint256 requestSparkVaultShares_ = request_.shares;
 
-            // Cancelled: skip, but bound the walk so the head still advances over a long run.
-            if (request_.shares == 0) {
-                if (++skipped_ == 500) break;
+            if (requestSparkVaultShares_ == 0) continue;
 
-                continue;
-            }
+            uint256 sparkVaultSharesToProcess_ =
+                _min(requestSparkVaultShares_, maxProcessableSparkVaultShares);
 
-            uint256 sparkVaultShares_ = _min(request_.shares, budget_);
-            uint256 assets_           = sparkVault_.convertToAssets(sparkVaultShares_);
-            uint256 shares_           = assets_ * RAY / chi_;
+            uint256 assets_ = IERC4626Like(sparkVault).convertToAssets(sparkVaultSharesToProcess_);
+            uint256 shares_ = convertToShares(assets_);
 
             // A partial fill must mint at least one share, else wait for more room.
-            if (shares_ == 0 && sparkVaultShares_ < request_.shares) break;
+            if (shares_ == 0 && sparkVaultSharesToProcess_ < requestSparkVaultShares_) break;
 
-            sparkVaultSharesEncumberedByDeposits -= sparkVaultShares_;
-            request_.shares                      -= sparkVaultShares_;
-            budget_                              -= sparkVaultShares_;
+            sparkVaultSharesEncumberedByDeposits -= sparkVaultSharesToProcess_;
+            request_.shares                      -= sparkVaultSharesToProcess_;
+            maxProcessableSparkVaultShares                              -= sparkVaultSharesToProcess_;
 
             _mint(request_.recipient, shares_);
 
@@ -704,8 +706,8 @@ contract SparkPrimeVault is AccessControlEnumerableUpgradeable, UUPSUpgradeable 
         uint256 budget_ = _min(maxAssets_, availableLiquidAssets());
         uint256 i_       = redeemHead;
 
-        for (; i_ < redeemQueue.length; ++i_) {
-            QueuedRedeemRequest storage request_ = redeemQueue[i_];
+        while (i_ < redeemQueue.length) {
+            QueuedRedeemRequest storage request_ = redeemQueue[i_++];
 
             uint256 shares_ = request_.shares;
             uint256 fee_    = request_.fee;
